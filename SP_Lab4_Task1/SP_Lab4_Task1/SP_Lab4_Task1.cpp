@@ -6,8 +6,8 @@
 
 HRESULT Execute7zip(TCHAR* cmd);
 
-HANDLE stdin_pipe_write = NULL;
-HANDLE stdin_pipe_read = NULL;
+HANDLE stderr_pipe_write = NULL;
+HANDLE stderr_pipe_read = NULL;
 HANDLE stdout_pipe_write = NULL;
 HANDLE stdout_pipe_read = NULL;
 
@@ -28,6 +28,19 @@ int _tmain(UINT argc, TCHAR** argv)
 		return 0;
 	}
 	if (!SetHandleInformation(stdout_pipe_read, HANDLE_FLAG_INHERIT, 0))
+	{
+		_tprintf(_T("Error protect stdout pipe.\n"));
+		return 0;
+	}
+
+	// Create a pipe for the child process's STDERR. 
+
+	if (!CreatePipe(&stderr_pipe_read, &stderr_pipe_write, &saAttr, 0))
+	{
+		_tprintf(_T("Error create pipe.\n"));
+		return 0;
+	}
+	if (!SetHandleInformation(stderr_pipe_read, HANDLE_FLAG_INHERIT, 0))
 	{
 		_tprintf(_T("Error protect stdout pipe.\n"));
 		return 0;
@@ -58,7 +71,7 @@ int _tmain(UINT argc, TCHAR** argv)
 		_tprintf(_T("Unknown key."));
 	}
 
-	_tsystem(_T("pause"));
+	LocalFree(cmd);
     return 0;
 }
 
@@ -93,19 +106,34 @@ void ErrorExit(PTSTR lpszFunction)
 
 void ReadFromPipe(void)
 {
-	DWORD dwRead = 0;
-	CHAR buffer[1024] = { 0 };
+	DWORD bytes_read = 0;
+	const DWORD sizeof_buffer = 1024 * sizeof(TCHAR);
+	TCHAR* buffer = (TCHAR*)LocalAlloc(LPTR, sizeof_buffer);
+	ZeroMemory(buffer, sizeof_buffer);
 	
-	ReadFile(stdout_pipe_read, buffer, 4096, &dwRead, NULL);
-	if (dwRead != 0)
+	// wait until 7z finish
+	do
+	{
+		// send \n to stdout in order not to stuck
+		WriteFile(stdout_pipe_write, _T("\n"), sizeof(TCHAR), NULL, NULL);
+		ReadFile(stdout_pipe_read, buffer, sizeof_buffer, &bytes_read, NULL);
+	} while (bytes_read > sizeof(TCHAR));
+	bytes_read ^= bytes_read;
+	// send \n to stderr in order not to stuck
+	//_tsystem(_T("sleep 1"));
+	WriteFile(stderr_pipe_write, _T("\n"), sizeof(TCHAR), NULL, NULL);
+	ReadFile(stderr_pipe_read, buffer, sizeof_buffer, &bytes_read, NULL);
+	if (bytes_read > sizeof(TCHAR))
 	{
 		_tprintf(_T("Error had happend.\n"));
-		WriteFile(GetStdHandle(STD_OUTPUT_HANDLE), buffer, dwRead, NULL, NULL);
+		WriteFile(GetStdHandle(STD_OUTPUT_HANDLE), buffer, bytes_read, NULL, NULL);
 	}
 	else
 	{
 		_tprintf(_T("Successful operation.\n"));
 	}
+
+	LocalFree(buffer);
 }
 
 HRESULT Execute7zip(TCHAR* cmd)
@@ -115,7 +143,8 @@ HRESULT Execute7zip(TCHAR* cmd)
 	HRESULT result_status = S_OK;
 
 	startup_info.cb = sizeof(STARTUPINFO);
-	startup_info.hStdError = stdout_pipe_write;
+	startup_info.hStdOutput = stdout_pipe_write;
+	startup_info.hStdError = stderr_pipe_write;
 	startup_info.dwFlags |= STARTF_USESTDHANDLES;
 
 	if (
@@ -136,10 +165,10 @@ HRESULT Execute7zip(TCHAR* cmd)
 	}
 	else
 	{
-		ReadFromPipe();
-
 		CloseHandle(process_information.hProcess);
 		CloseHandle(process_information.hThread);
+
+		ReadFromPipe();
 	}
 
 	return result_status;
